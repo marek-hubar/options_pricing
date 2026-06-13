@@ -185,6 +185,8 @@ public:
         base_intrinsic.resize(N);
     }
 
+    int spatial_res() const { return static_cast<int>(N); }
+
     // time_steps is the number of temporal points, not the intervals between them: |----|----| <- this is time_step=3
     void calculate_price_surface(OptionSpec &option_specification, MarketEnvironment &market_env, int time_steps, std::span<double> price_surface_buffer, std::span<double> s_grid_buffer, std::span<double> t_grid_buffer) {
         double tau_max = 0.5 * market_env.sigma * market_env.sigma * option_specification.expiration;
@@ -354,6 +356,7 @@ public:
 
 
 // Takes real stock prices, real times, and real option prices
+#ifndef __EMSCRIPTEN__
 void export_surface_to_json(std::span<const double> s_grid, 
                             std::span<const double> t_grid, 
                             std::span<const double> price_surface, 
@@ -403,7 +406,9 @@ void export_surface_to_json(std::span<const double> s_grid,
     file << "}\n";
     std::cout << "\nSuccessfully exported fully-transformed data to " << filename << std::endl;
 }
+#endif
 
+#ifndef __EMSCRIPTEN__
 int main() {
     float S = 100, K = 100, r = 0.05, sigma = 0.55, T = 1.0;
     std::cout << "Call Option Price: " << price_european_call_option(K, T, S, r, sigma) << std::endl;
@@ -425,7 +430,8 @@ int main() {
     pricer.calculate_price_surface(option, market, temporal_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
     std::cout << "Option Price: " << pricer.price(option, market, temporal_resolution) << std::endl;
 
-    export_surface_to_json(s_grid_buffer, t_grid_buffer, price_surface_buffer, "price_surface.json");
+    export_surface_to_json(s_grid_buffer, t_grid_buffer, price_surface_buffer, "test/price_surface.json");
 
     return 0;
 }
+#endif

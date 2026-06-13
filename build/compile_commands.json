@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/Users/marek/Documents/quant/derivative_pricing/build",
+  "command": "/usr/bin/c++   -std=c++20 -arch arm64 -o CMakeFiles/pricer.dir/pricing.cpp.o -c /Users/marek/Documents/quant/derivative_pricing/pricing.cpp",
+  "file": "/Users/marek/Documents/quant/derivative_pricing/pricing.cpp",
+  "output": "CMakeFiles/pricer.dir/pricing.cpp.o"
+}
+]
