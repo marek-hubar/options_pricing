@@ -107,13 +107,13 @@ class AmericanOptionPricer {
 private:
     std::vector<double> x_grid;
     std::vector<double> base_intrinsic;
-    double N;
+    int N;
 
 
     struct CrankNicolsonStepper {
         std::optional<ThomasSolver> solver;
         std::vector<double> a, b, c, d;
-        double N;
+        int N;
         CrankNicolsonStepper(std::span<double> x_grid, double d_tau) {
             N = x_grid.size();
             double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
@@ -142,9 +142,11 @@ private:
             solver.emplace(a, b, c);
         }
 
+        // The fill price vector (of length N) should be passed into the price_curr arugment
+        // and a buffer (of length N-2) for the solved interior of the next price vector should be passed to price_next
         void advance_one_step(std::span<double> price_curr, std::span<double> price_next) {
-            for (int i=1; i<N-3; i++) {
-                d[i-1] = -a[i] * price_curr[i-1] +  (2 - b[i]) * price_curr[i] - c[i] * price_curr[i+1];
+            for (int i=0; i<N-2; i++) {
+                d[i] = -a[i] * price_curr[i] +  (2 - b[i]) * price_curr[i+1] - c[i] * price_curr[i+2];
             }
 
             solver->solve(a, d, price_next);
@@ -201,7 +203,6 @@ public:
         double alpha = -0.5 * (k - 1);
         double beta = -0.25 * (k + 1) * (k + 1);
 
-        generate_x_grid_uniform(option_specification, market_env, x_grid);
         generate_payoff(option_specification, alpha, base_intrinsic);
 
         auto first_row = price_surface_buffer.subspan(0, N);
@@ -212,9 +213,9 @@ public:
         for (int i=0; i<time_steps-1; i++) {
             auto row_tau_i = price_surface_buffer.subspan(N * i, N);
             auto row_tau_i_plus_one = price_surface_buffer.subspan(N * (i+1), N);
-            auto row_tau_i_plus_one_inside = price_surface_buffer.subspan(N * (i+1) + 1, N-2);
+            auto row_tau_i_plus_one_interior = price_surface_buffer.subspan(N * (i+1) + 1, N-2);
 
-            stepper.advance_one_step(row_tau_i, row_tau_i_plus_one_inside);
+            stepper.advance_one_step(row_tau_i, row_tau_i_plus_one_interior);
 
             row_tau_i_plus_one[0] = (1 + c_L) * row_tau_i_plus_one[1] - c_L * row_tau_i_plus_one[2];
             row_tau_i_plus_one[N-1] = (1 + c_R) * row_tau_i_plus_one[N-2] - c_R * row_tau_i_plus_one[N-3];

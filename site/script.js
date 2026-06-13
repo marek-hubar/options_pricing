@@ -33,14 +33,21 @@ function onPriceClick() {
   var errorDiv = document.getElementById('error-display');
   var priceDisplay = document.getElementById('price-display');
 
-  var optionType = parseInt(document.getElementById('option-type').value);
-  var strike = parseFloat(document.getElementById('strike').value);
-  var expiration = parseFloat(document.getElementById('expiration').value);
-  var spot = parseFloat(document.getElementById('spot').value);
-  var sigma = parseFloat(document.getElementById('sigma').value);
-  var rate = parseFloat(document.getElementById('rate').value);
-  var spatialRes = parseInt(spatialResSlider.value);
-  var timeSteps = parseInt(temporalResSlider.value);
+  var optionType, strike, expiration, spot, sigma, rate, spatialRes, timeSteps;
+  try {
+    optionType = parseInt(document.getElementById('option-type').value);
+    strike = parseFloat(document.getElementById('strike').value);
+    expiration = parseFloat(document.getElementById('expiration').value);
+    spot = parseFloat(document.getElementById('spot').value);
+    sigma = parseFloat(document.getElementById('sigma').value);
+    rate = parseFloat(document.getElementById('rate').value);
+    spatialRes = parseInt(spatialResSlider.value);
+    timeSteps = parseInt(temporalResSlider.value);
+  } catch (e) {
+    errorDiv.textContent = e.message || 'Failed to read parameters.';
+    errorDiv.classList.remove('hidden');
+    return;
+  }
 
   var error = validateParams(strike, expiration, spot, sigma, rate, spatialRes, timeSteps);
   if (error) {
