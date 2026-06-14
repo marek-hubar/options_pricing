@@ -25,7 +25,7 @@ jobs:
             -std=c++20 \
             -O2 \
             -s ALLOW_MEMORY_GROWTH=1 \
-            -s EXPORTED_FUNCTIONS='["_pricer_create","_pricer_destroy","_pricer_price","_pricer_surface","_pricer_spatial_res","_malloc","_free"]' \
+            -s EXPORTED_FUNCTIONS='["_pricer_create","_pricer_destroy","_pricer_price","_pricer_surface","_malloc","_free"]' \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue"]' \
             -s ENVIRONMENT='web' \
             --no-entry

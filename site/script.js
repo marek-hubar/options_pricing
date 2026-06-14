@@ -33,8 +33,9 @@ function onPriceClick() {
   var errorDiv = document.getElementById('error-display');
   var priceDisplay = document.getElementById('price-display');
 
-  var optionType, strike, expiration, spot, sigma, rate, spatialRes, timeSteps;
+  var optionType, strike, expiration, spot, sigma, rate, spatialRes, timeSteps, pricingModel;
   try {
+    pricingModel = parseInt(document.getElementById('pricing-model').value);
     optionType = parseInt(document.getElementById('option-type').value);
     strike = parseFloat(document.getElementById('strike').value);
     expiration = parseFloat(document.getElementById('expiration').value);
@@ -63,7 +64,7 @@ function onPriceClick() {
 
   setTimeout(function () {
     try {
-      var handle = Module._pricer_create(spatialRes);
+      var handle = Module._pricer_create();
       if (!handle) {
         throw new Error('Failed to create pricer (out of memory).');
       }
@@ -81,12 +82,12 @@ function onPriceClick() {
         throw new Error('Failed to allocate WASM memory for grids.');
       }
 
-      Module._pricer_surface(handle, optionType, strike, expiration,
-                             spot, sigma, rate, timeSteps,
+      Module._pricer_surface(handle, pricingModel, optionType, strike, expiration,
+                             spot, sigma, rate, timeSteps, spatialRes,
                              surfPtr, sGridPtr, tGridPtr);
 
-      var price = Module._pricer_price(handle, optionType, strike, expiration,
-                                       spot, sigma, rate, timeSteps);
+      var price = Module._pricer_price(handle, pricingModel, optionType, strike, expiration,
+                                       spot, sigma, rate, timeSteps, spatialRes);
 
       var sGrid = Array.from(new Float64Array(Module.HEAPU8.buffer, sGridPtr, spatialRes));
       var tGrid = Array.from(new Float64Array(Module.HEAPU8.buffer, tGridPtr, timeSteps));
@@ -109,9 +110,11 @@ function onPriceClick() {
         x: sGrid,
         y: tGrid,
         z: zData,
-        colorscale: 'Viridis',
+        // colorscale: 'Viridis',
+        colorscale: 'Cividis',
         contours: {
-          z: { show: true, usecolormap: true, highlightcolor: 'rgba(255,255,255,0.6)', project: { z: true } }
+            z: { show: true, usecolormap: true, highlightcolor: 'rgba(255, 136, 0, 1)', project: { z: true } },
+          x: { show: true, usecolormap: true, highlightcolor: 'rgba(179, 255, 0, 1)', project: { x: true } }
         }
       }], {
         title: 'American Option Price Surface',

@@ -79,7 +79,7 @@ public:
     }
     //
     // time_steps is the number of temporal points, not the intervals between them: |----|----| <- this is time_step=3
-    void calculate_price_surface(OptionSpec &option_specification, MarketEnvironment &market_env, int time_steps, int spatial_resolution, std::span<double> price_surface_buffer, std::span<double> s_grid_buffer, std::span<double> t_grid_buffer) {
+    void calculate_price_surface(const OptionSpec &option_specification, const MarketEnvironment &market_env, int time_steps, int spatial_resolution, std::span<double> price_surface_buffer, std::span<double> s_grid_buffer, std::span<double> t_grid_buffer) {
         generate_s_grid_exponential(option_specification, market_env, s_grid_buffer);
         // Populate the first row of the price_surface_buffer with the payoff
         generate_payoff(option_specification, s_grid_buffer, price_surface_buffer);
@@ -174,17 +174,12 @@ public:
 
 class AmericanOptionPricer {
 private:
-    std::vector<double> x_grid;
-    std::vector<double> base_intrinsic;
-    int N;
-
-
     struct CrankNicolsonStepper {
         std::optional<ThomasSolver> solver;
         std::vector<double> a, b, c, d;
         int N;
         CrankNicolsonStepper(std::span<double> x_grid, double d_tau) {
-            N = x_grid.size();
+            N = static_cast<int>(x_grid.size());
             double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
             double c_R = (x_grid[N-1] - x_grid[N-2]) / (x_grid[N-2] - x_grid[N-3]);
 
@@ -211,8 +206,6 @@ private:
             solver.emplace(a, b, c);
         }
 
-        // The fill price vector (of length N) should be passed into the price_curr arugment
-        // and a buffer (of length N-2) for the solved interior of the next price vector should be passed to price_next
         void advance_one_step(std::span<double> price_curr, std::span<double> price_next) {
             for (int i=0; i<N-2; i++) {
                 d[i] = -a[i] * price_curr[i] +  (2 - b[i]) * price_curr[i+1] - c[i] * price_curr[i+2];
@@ -223,13 +216,14 @@ private:
 
     };
 
-    void generate_x_grid_uniform(const OptionSpec &option, const MarketEnvironment &market, std::span<double> x_grid) {
+    static void generate_x_grid_uniform(const OptionSpec &option, const MarketEnvironment &market, std::span<double> x_grid) {
         double x_center = std::log(market.underlying_price / option.strike);
         double std_devs = std::sqrt(option.expiration) * market.sigma * 3.0;
 
         double x_min = x_center - std_devs;
         double x_max = x_center + std_devs;
 
+        int N = static_cast<int>(x_grid.size());
         double delta_x = (x_max - x_min) / (N - 1);
 
         for (int i=0; i<N; i++) {
@@ -237,7 +231,8 @@ private:
         }
     }
 
-    void generate_payoff(const OptionSpec &option, double alpha, std::span<double> payoff) {
+    static void generate_payoff(const OptionSpec &option, double alpha, std::span<const double> x_grid, std::span<double> payoff) {
+        int N = static_cast<int>(x_grid.size());
         if (option.type == call) {
             for (int i=0; i<N; i++) {
                 payoff[i] = std::exp(-alpha * x_grid[i]) * std::max(std::exp(x_grid[i]) - 1.0, 0.0);
@@ -250,90 +245,82 @@ private:
     }
 
 public:
-    AmericanOptionPricer(int spatial_resolution) {
-        N = spatial_resolution;
-        x_grid.resize(N);
-        base_intrinsic.resize(N);
-    }
+    void calculate_price_surface(const OptionSpec &option_specification, const MarketEnvironment &market_env, int time_steps, std::span<double> price_surface_buffer, std::span<double> s_grid_buffer, std::span<double> t_grid_buffer) {
+        int spatial_resolution = static_cast<int>(s_grid_buffer.size());
 
-    int spatial_res() const { return static_cast<int>(N); }
+        std::vector<double> x_grid(spatial_resolution);
+        std::vector<double> base_intrinsic(spatial_resolution);
 
-    // time_steps is the number of temporal points, not the intervals between them: |----|----| <- this is time_step=3
-    void calculate_price_surface(OptionSpec &option_specification, MarketEnvironment &market_env, int time_steps, std::span<double> price_surface_buffer, std::span<double> s_grid_buffer, std::span<double> t_grid_buffer) {
         double tau_max = 0.5 * market_env.sigma * market_env.sigma * option_specification.expiration;
         double d_tau = tau_max / double(time_steps);
 
         generate_x_grid_uniform(option_specification, market_env, x_grid);
 
         double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
-        double c_R = (x_grid[N-1] - x_grid[N-2]) / (x_grid[N-2] - x_grid[N-3]);
+        double c_R = (x_grid[spatial_resolution-1] - x_grid[spatial_resolution-2]) / (x_grid[spatial_resolution-2] - x_grid[spatial_resolution-3]);
 
         double k = 2 * market_env.risk_free_rate / (market_env.sigma * market_env.sigma);
         double alpha = -0.5 * (k - 1);
         double beta = -0.25 * (k + 1) * (k + 1);
 
-        generate_payoff(option_specification, alpha, base_intrinsic);
+        generate_payoff(option_specification, alpha, x_grid, base_intrinsic);
 
-        auto first_row = price_surface_buffer.subspan(0, N);
+        auto first_row = price_surface_buffer.subspan(0, spatial_resolution);
         std::copy(base_intrinsic.begin(), base_intrinsic.end(), first_row.begin());
 
         CrankNicolsonStepper stepper(x_grid, d_tau);
 
         for (int i=0; i<time_steps-1; i++) {
-            auto row_tau_i = price_surface_buffer.subspan(N * i, N);
-            auto row_tau_i_plus_one = price_surface_buffer.subspan(N * (i+1), N);
-            auto row_tau_i_plus_one_interior = price_surface_buffer.subspan(N * (i+1) + 1, N-2);
+            auto row_tau_i = price_surface_buffer.subspan(spatial_resolution * i, spatial_resolution);
+            auto row_tau_i_plus_one = price_surface_buffer.subspan(spatial_resolution * (i+1), spatial_resolution);
+            auto row_tau_i_plus_one_interior = price_surface_buffer.subspan(spatial_resolution * (i+1) + 1, spatial_resolution-2);
 
             stepper.advance_one_step(row_tau_i, row_tau_i_plus_one_interior);
 
             row_tau_i_plus_one[0] = (1 + c_L) * row_tau_i_plus_one[1] - c_L * row_tau_i_plus_one[2];
-            row_tau_i_plus_one[N-1] = (1 + c_R) * row_tau_i_plus_one[N-2] - c_R * row_tau_i_plus_one[N-3];
+            row_tau_i_plus_one[spatial_resolution-1] = (1 + c_R) * row_tau_i_plus_one[spatial_resolution-2] - c_R * row_tau_i_plus_one[spatial_resolution-3];
 
             double current_tau = (i + 1) * d_tau;
             double time_scalar = std::exp(-beta * current_tau);
-            
-            for (int j=0; j<N; j++) {
+
+            for (int j=0; j<spatial_resolution; j++) {
                 row_tau_i_plus_one[j] = std::max(row_tau_i_plus_one[j], time_scalar * base_intrinsic[j]);
             }
         }
 
-        // 1. Populate the output Stock Price grid
-        for (size_t j = 0; j < N; j++) {
+        for (int j = 0; j < spatial_resolution; j++) {
             s_grid_buffer[j] = option_specification.strike * std::exp(x_grid[j]);
         }
 
-        // 2. Populate the output Time to Maturity grid AND convert the surface
         for (int i = 0; i < time_steps; i++) {
             double current_tau = i * d_tau;
-            
-            // Map tau back to real physical time to maturity
+
             t_grid_buffer[i] = (2.0 * current_tau) / (market_env.sigma * market_env.sigma);
 
-            // FIXED: Multiply by positive beta to invert the transformation
             double time_growth = std::exp(beta * current_tau);
 
-            for (size_t j = 0; j < N; j++) {
-                // FIXED: Multiply by positive alpha to invert the transformation
+            for (int j = 0; j < spatial_resolution; j++) {
                 double space_growth = std::exp(alpha * x_grid[j]);
-                double abstract_u = price_surface_buffer[i * N + j];
-                
-                // V(S, t) = K * u(x, tau) * exp(+alpha*x + beta*tau)
-                price_surface_buffer[i * N + j] = option_specification.strike * abstract_u * space_growth * time_growth;
+                double abstract_u = price_surface_buffer[i * spatial_resolution + j];
+
+                price_surface_buffer[i * spatial_resolution + j] = option_specification.strike * abstract_u * space_growth * time_growth;
             }
         }
-
     }
 
-    double price(const OptionSpec &option_specification, const MarketEnvironment &market_env, int time_steps) {
-        // 1. Setup Time and Mesh parameters
+    double price(const OptionSpec &option_specification, const MarketEnvironment &market_env, int time_steps, int spatial_resolution) {
+
+        std::vector<double> x_grid(spatial_resolution);
+        std::vector<double> base_intrinsic(spatial_resolution);
+
         double tau_max = 0.5 * market_env.sigma * market_env.sigma * option_specification.expiration;
         int time_intervals = time_steps > 1 ? time_steps - 1 : 1;
-        // Generate grid and payoff
+
         generate_x_grid_uniform(option_specification, market_env, x_grid);
 
         double d_tau = tau_max / double(time_intervals);
         double min_dx = x_grid[1] - x_grid[0];
-        for (int i=1; i<N-1; i++)
+        for (int i=1; i<spatial_resolution-1; i++)
             if (x_grid[i + 1] - x_grid[i] < min_dx)
                 min_dx = x_grid[i + 1] - x_grid[i];
 
@@ -352,75 +339,60 @@ public:
                       << "==============================================================\n\n";
         }
 
-
         double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
-        double c_R = (x_grid[N-1] - x_grid[N-2]) / (x_grid[N-2] - x_grid[N-3]);
+        double c_R = (x_grid[spatial_resolution-1] - x_grid[spatial_resolution-2]) / (x_grid[spatial_resolution-2] - x_grid[spatial_resolution-3]);
 
         double k = 2.0 * market_env.risk_free_rate / (market_env.sigma * market_env.sigma);
         double alpha = -0.5 * (k - 1.0);
         double beta = -0.25 * (k + 1.0) * (k + 1.0);
 
-        generate_payoff(option_specification, alpha, base_intrinsic);
+        generate_payoff(option_specification, alpha, x_grid, base_intrinsic);
 
-        // 2. Memory Optimization: We only need two rows
-        std::vector<double> u_prev(N, 0.0);
-        std::vector<double> u_curr = base_intrinsic; // Starts at tau = 0
+        std::vector<double> u_prev(spatial_resolution, 0.0);
+        std::vector<double> u_curr = base_intrinsic;
 
         CrankNicolsonStepper stepper(x_grid, d_tau);
 
-        // 3. Time Loop (Swapping rows instead of building a matrix)
         for (int i = 0; i < time_intervals; i++) {
-            
-            // The current row becomes the previous row for this step
-            std::swap(u_prev, u_curr); 
+            std::swap(u_prev, u_curr);
 
-            auto u_curr_inside = std::span<double>(u_curr).subspan(1, N - 2);
+            auto u_curr_inside = std::span<double>(u_curr).subspan(1, spatial_resolution - 2);
 
-            // Advance the PDE
             stepper.advance_one_step(u_prev, u_curr_inside);
 
-            // Apply boundaries
             u_curr[0] = (1.0 + c_L) * u_curr[1] - c_L * u_curr[2];
-            u_curr[N-1] = (1.0 + c_R) * u_curr[N-2] - c_R * u_curr[N-3];
+            u_curr[spatial_resolution-1] = (1.0 + c_R) * u_curr[spatial_resolution-2] - c_R * u_curr[spatial_resolution-3];
 
-            // Apply American early-exercise constraint
             double current_tau = (i + 1) * d_tau;
             double time_scalar = std::exp(-beta * current_tau);
-            
-            for (size_t j = 0; j < N; j++) {
+
+            for (int j = 0; j < spatial_resolution; j++) {
                 u_curr[j] = std::max(u_curr[j], time_scalar * base_intrinsic[j]);
             }
         }
 
-        // 4. Extract the exact Option Price at the Current Stock Price
-        // In log-space, the current spot price S_0 maps exactly to x_target
         double target_x = std::log(market_env.underlying_price / option_specification.strike);
-        
-        // Find where target_x falls on our grid
+
         size_t idx = 0;
-        for (size_t j = 0; j < N - 1; j++) {
+        for (size_t j = 0; j < static_cast<size_t>(spatial_resolution - 1); j++) {
             if (target_x >= x_grid[j] && target_x <= x_grid[j+1]) {
                 idx = j;
                 break;
             }
         }
 
-        // Linearly interpolate the abstract heat value between the two closest nodes
         double x0 = x_grid[idx];
         double x1 = x_grid[idx+1];
         double u0 = u_curr[idx];
         double u1 = u_curr[idx+1];
-        
+
         double weight = (target_x - x0) / (x1 - x0);
         double interpolated_u = u0 + weight * (u1 - u0);
 
-        // 5. Apply the Inverse Transformation (Only ONCE!)
         double time_growth = std::exp(beta * tau_max);
         double space_growth = std::exp(alpha * target_x);
-        
-        double final_price = option_specification.strike * interpolated_u * space_growth * time_growth;
 
-        return final_price;
+        return option_specification.strike * interpolated_u * space_growth * time_growth;
     }
 };
 
@@ -495,7 +467,7 @@ int main() {
     std::vector<double> s_grid_buffer(spatial_resolution, 0.0);
     std::vector<double> t_grid_buffer(temporal_resolution, 0.0);
 
-    AmericanOptionPricer american_pricer(spatial_resolution);
+    AmericanOptionPricer american_pricer;
     EuropeanOptionPricer european_pricer;
 
     // std::cout << "Call Option Price: " << european_pricer.price(call_option, market) << std::endl;
@@ -503,7 +475,7 @@ int main() {
 
     // american_pricer.calculate_price_surface(call_option, market, temporal_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
     european_pricer.calculate_price_surface(put_option, market, temporal_resolution, spatial_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
-    // std::cout << "Option Price: " << american_pricer.price(call_option, market, temporal_resolution) << std::endl;
+    // std::cout << "Option Price: " << american_pricer.price(call_option, market, temporal_resolution, spatial_resolution) << std::endl;
 
     export_surface_to_json(s_grid_buffer, t_grid_buffer, price_surface_buffer, "test/price_surface.json");
 
