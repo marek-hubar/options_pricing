@@ -17,13 +17,14 @@ double pricer_price(void* handle,
                     double strike,
                     double expiration,
                     double underlying_price,
+                    double dividend_yield,
                     double sigma,
                     double risk_free_rate,
                     int time_steps,
                     int spatial_resolution) {
     (void)handle;
     OptionSpec spec = {strike, expiration, option_type == 0 ? call : put};
-    MarketEnvironment market = {underlying_price, sigma, risk_free_rate};
+    MarketEnvironment market = {underlying_price, dividend_yield, sigma, risk_free_rate};
     if (pricing_model == 0) {
         EuropeanOptionPricer pricer;
         return pricer.price(spec, market);
@@ -39,6 +40,7 @@ void pricer_surface(void* handle,
                     double strike,
                     double expiration,
                     double underlying_price,
+                    double dividend_yield,
                     double sigma,
                     double risk_free_rate,
                     int time_steps,
@@ -48,7 +50,7 @@ void pricer_surface(void* handle,
                     double* t_grid_buf) {
     (void)handle;
     OptionSpec spec = {strike, expiration, option_type == 0 ? call : put};
-    MarketEnvironment market = {underlying_price, sigma, risk_free_rate};
+    MarketEnvironment market = {underlying_price, dividend_yield, sigma, risk_free_rate};
 
     int N = spatial_resolution;
     std::span<double> surface_span(surface_buf, static_cast<size_t>(time_steps) * N);

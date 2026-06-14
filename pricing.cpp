@@ -16,6 +16,7 @@ struct OptionSpec {
 
 struct MarketEnvironment {
     double underlying_price;
+    double dividend_yield; // as fraction of the stock price
     double sigma;
     double risk_free_rate;
 };
@@ -67,13 +68,13 @@ public:
         double exponential = std::exp(-market_env.risk_free_rate * option_specification.expiration);
         double normalizer = market_env.sigma * std::sqrt(option_specification.expiration);
         double log_S_over_K = std::log(market_env.underlying_price / option_specification.strike);
-        double d1 = (log_S_over_K + (market_env.risk_free_rate + 0.5 * market_env.sigma * market_env.sigma) * option_specification.expiration) / normalizer;
+        double d1 = (log_S_over_K + (market_env.risk_free_rate - market_env.dividend_yield + 0.5 * market_env.sigma * market_env.sigma) * option_specification.expiration) / normalizer;
         double d2 = d1 - normalizer;
-        double option_price = option_specification.strike * normal_cdf(-d2) * exponential - market_env.underlying_price * normal_cdf(-d1);
+        double option_price = option_specification.strike * normal_cdf(-d2) * exponential - market_env.underlying_price * std::exp(-market_env.dividend_yield * option_specification.expiration) * normal_cdf(-d1);
 
         // Then we use put-call parity to calculate the call price (if the option is a call)
         if (option_specification.type == call) {
-            option_price += market_env.underlying_price - option_specification.strike * std::exp(-market_env.risk_free_rate * option_specification.expiration);
+            option_price += market_env.underlying_price * std::exp(-market_env.dividend_yield * option_specification.expiration) - option_specification.strike * std::exp(-market_env.risk_free_rate * option_specification.expiration);
         }
         return option_price;
     }
@@ -90,7 +91,8 @@ public:
             log_s_over_K_vector[j] = std::log(s_grid_buffer[j] / option_specification.strike);
 
         t_grid_buffer[0] = 0.0;
-        double dt = option_specification.expiration / double(time_steps - 1);
+        int time_intervals = time_steps > 1 ? time_steps - 1 : 1;
+        double dt = option_specification.expiration / double(time_intervals);
         for (int i=1; i<time_steps; i++) {
             double t = i * dt;
             t_grid_buffer[i] = t;
@@ -98,18 +100,18 @@ public:
             double normalizer = market_env.sigma * std::sqrt(t);
 
             for (int j=0; j<spatial_resolution; j++) {
-                double d1 = (log_s_over_K_vector[j] + (market_env.risk_free_rate + 0.5 * market_env.sigma * market_env.sigma) * t) / normalizer;
+                double d1 = (log_s_over_K_vector[j] + (market_env.risk_free_rate - market_env.dividend_yield + 0.5 * market_env.sigma * market_env.sigma) * t) / normalizer;
                 double d2 = d1 - normalizer;
-                price_surface_buffer[i * spatial_resolution + j] = option_specification.strike * normal_cdf(-d2) * exponential - s_grid_buffer[j] * normal_cdf(-d1);
+                price_surface_buffer[i * spatial_resolution + j] = option_specification.strike * normal_cdf(-d2) * exponential - s_grid_buffer[j] * std::exp(-market_env.dividend_yield * t) * normal_cdf(-d1);
             }
         }
     
         // If a call option is specified, use the put-call parity to calculate the call option surface
         if (option_specification.type == call) {
-            for (int i=0; i<time_steps; i++) {
+            for (int i=1; i<time_steps; i++) {
                 double time_component = option_specification.strike * std::exp(-market_env.risk_free_rate * t_grid_buffer[i]);
                 for (int j=0; j<spatial_resolution; j++) {
-                    price_surface_buffer[i * spatial_resolution + j] += s_grid_buffer[j] - time_component;
+                    price_surface_buffer[i * spatial_resolution + j] += s_grid_buffer[j] * std::exp(-market_env.dividend_yield * t_grid_buffer[i]) - time_component;
                 }
             }
         }
@@ -252,16 +254,19 @@ public:
         std::vector<double> base_intrinsic(spatial_resolution);
 
         double tau_max = 0.5 * market_env.sigma * market_env.sigma * option_specification.expiration;
-        double d_tau = tau_max / double(time_steps);
+        int time_intervals = time_steps > 1 ? time_steps - 1 : 1;
+        double d_tau = tau_max / double(time_intervals);
 
         generate_x_grid_uniform(option_specification, market_env, x_grid);
 
         double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
         double c_R = (x_grid[spatial_resolution-1] - x_grid[spatial_resolution-2]) / (x_grid[spatial_resolution-2] - x_grid[spatial_resolution-3]);
 
-        double k = 2 * market_env.risk_free_rate / (market_env.sigma * market_env.sigma);
-        double alpha = -0.5 * (k - 1);
-        double beta = -0.25 * (k + 1) * (k + 1);
+        double k1 = 2 * (market_env.risk_free_rate - market_env.dividend_yield) / (market_env.sigma * market_env.sigma);
+        double k2 = 2.0 * market_env.risk_free_rate / (market_env.sigma * market_env.sigma);
+
+        double alpha = -0.5 * (k1 - 1);
+        double beta = -alpha * alpha - k2;
 
         generate_payoff(option_specification, alpha, x_grid, base_intrinsic);
 
@@ -342,9 +347,11 @@ public:
         double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
         double c_R = (x_grid[spatial_resolution-1] - x_grid[spatial_resolution-2]) / (x_grid[spatial_resolution-2] - x_grid[spatial_resolution-3]);
 
-        double k = 2.0 * market_env.risk_free_rate / (market_env.sigma * market_env.sigma);
-        double alpha = -0.5 * (k - 1.0);
-        double beta = -0.25 * (k + 1.0) * (k + 1.0);
+        double k1 = 2.0 * (market_env.risk_free_rate - market_env.dividend_yield) / (market_env.sigma * market_env.sigma);
+        double k2 = 2.0 * market_env.risk_free_rate / (market_env.sigma * market_env.sigma);
+
+        double alpha = -0.5 * (k1 - 1.0);
+        double beta = -alpha * alpha - k2;
 
         generate_payoff(option_specification, alpha, x_grid, base_intrinsic);
 
@@ -454,7 +461,7 @@ void export_surface_to_json(std::span<const double> s_grid,
 int main() {
     OptionSpec call_option = {100.0, 1.0, call};
     OptionSpec put_option = {100.0, 1.0, put};
-    MarketEnvironment market = {100.0, 0.2, 0.05};
+    MarketEnvironment market = {100.0, 0.1, 0.2, 0.05};
 
 
 

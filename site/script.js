@@ -16,9 +16,10 @@ temporalResSlider.addEventListener('input', function () {
   document.getElementById('temporal-res-val').textContent = this.value;
 });
 
-function validateParams(strike, expiration, spot, sigma, rate, spatialRes, timeSteps) {
+function validateParams(strike, expiration, spot, sigma, rate, dividendYield, spatialRes, timeSteps) {
   if (sigma <= 0) return 'Volatility must be positive.';
   if (rate < 0) return 'Risk-free rate cannot be negative.';
+  if (dividendYield < 0) return 'Dividend yield cannot be negative.';
   if (expiration <= 0) return 'Expiration must be positive.';
   if (spot <= 0) return 'Underlying price must be positive.';
   if (strike <= 0) return 'Strike price must be positive.';
@@ -33,15 +34,16 @@ function onPriceClick() {
   var errorDiv = document.getElementById('error-display');
   var priceDisplay = document.getElementById('price-display');
 
-  var optionType, strike, expiration, spot, sigma, rate, spatialRes, timeSteps, pricingModel;
+  var optionType, strike, expiration, spot, sigma, rate, dividendYield, spatialRes, timeSteps, pricingModel;
   try {
     pricingModel = parseInt(document.getElementById('pricing-model').value);
     optionType = parseInt(document.getElementById('option-type').value);
     strike = parseFloat(document.getElementById('strike').value);
-    expiration = parseFloat(document.getElementById('expiration').value);
+    expiration = parseFloat(document.getElementById('expiration').value) / 365;
     spot = parseFloat(document.getElementById('spot').value);
-    sigma = parseFloat(document.getElementById('sigma').value);
-    rate = parseFloat(document.getElementById('rate').value);
+    sigma = parseFloat(document.getElementById('sigma').value) / 100;
+    rate = parseFloat(document.getElementById('rate').value) / 100;
+    dividendYield = parseFloat(document.getElementById('dividend-yield').value) / 100;
     spatialRes = parseInt(spatialResSlider.value);
     timeSteps = parseInt(temporalResSlider.value);
   } catch (e) {
@@ -50,7 +52,7 @@ function onPriceClick() {
     return;
   }
 
-  var error = validateParams(strike, expiration, spot, sigma, rate, spatialRes, timeSteps);
+  var error = validateParams(strike, expiration, spot, sigma, rate, dividendYield, spatialRes, timeSteps);
   if (error) {
     errorDiv.textContent = error;
     errorDiv.classList.remove('hidden');
@@ -83,11 +85,11 @@ function onPriceClick() {
       }
 
       Module._pricer_surface(handle, pricingModel, optionType, strike, expiration,
-                             spot, sigma, rate, timeSteps, spatialRes,
+                             spot, dividendYield, sigma, rate, timeSteps, spatialRes,
                              surfPtr, sGridPtr, tGridPtr);
 
       var price = Module._pricer_price(handle, pricingModel, optionType, strike, expiration,
-                                       spot, sigma, rate, timeSteps, spatialRes);
+                                       spot, dividendYield, sigma, rate, timeSteps, spatialRes);
 
       var sGrid = Array.from(new Float64Array(Module.HEAPU8.buffer, sGridPtr, spatialRes));
       var tGrid = Array.from(new Float64Array(Module.HEAPU8.buffer, tGridPtr, timeSteps));
@@ -117,7 +119,7 @@ function onPriceClick() {
           x: { show: true, usecolormap: true, highlightcolor: 'rgba(179, 255, 0, 1)', project: { x: true } }
         }
       }], {
-        title: 'American Option Price Surface',
+        title: (pricingModel === 0 ? 'European' : 'American') + ' Option Price Surface',
         scene: {
           xaxis: { title: 'Stock Price', color: '#e0e0e0', gridcolor: '#2a2a4a' },
           yaxis: { title: 'Time to Maturity (years)', color: '#e0e0e0', gridcolor: '#2a2a4a' },
