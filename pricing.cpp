@@ -20,33 +20,102 @@ struct MarketEnvironment {
     double risk_free_rate;
 };
 
-class EuropeanOptionPricer {
 
+class EuropeanOptionPricer {
+private:
+    // Standard Normal CDF
+    double normal_cdf(double z) {
+        return 0.5 * std::erfc(-z * std::sqrt(0.5));
+    }
+
+    void generate_s_grid_exponential(const OptionSpec &option, const MarketEnvironment &market, std::span<double> s_grid) {
+        int N = s_grid.size();
+        double x_center = std::log(market.underlying_price / option.strike);
+        double std_devs = std::sqrt(option.expiration) * market.sigma * 3.0;
+
+        double x_min = x_center - std_devs;
+        double x_max = x_center + std_devs;
+
+        double delta_x = (x_max - x_min) / (N - 1);
+
+        for (int i=0; i<N; i++) {
+            s_grid[i] = option.strike * std::exp(x_min + i * delta_x);
+        }
+    }
+
+    void generate_payoff(const OptionSpec &option, std::span<double> s_grid, std::span<double> payoff) {
+        int N = s_grid.size();
+        if (option.type == call) {
+            for (int i=0; i<N; i++) {
+                payoff[i] = std::max(s_grid[i] - option.strike, 0.0);
+            }
+        } else {
+            for (int i=0; i<N; i++) {
+                payoff[i] = std::max(option.strike - s_grid[i], 0.0);
+            }
+        }
+    }
+
+public:
+    double price(const OptionSpec &option_specification, const MarketEnvironment &market_env) {
+        // First we calculate the put option price with the specified parameters
+        if (option_specification.expiration <= 0.0) {
+            if (option_specification.type == put)
+                return std::max(option_specification.strike - market_env.underlying_price, 0.0);
+            return std::max(market_env.underlying_price - option_specification.strike, 0.0);
+        }
+        double exponential = std::exp(-market_env.risk_free_rate * option_specification.expiration);
+        double normalizer = market_env.sigma * std::sqrt(option_specification.expiration);
+        double log_S_over_K = std::log(market_env.underlying_price / option_specification.strike);
+        double d1 = (log_S_over_K + (market_env.risk_free_rate + 0.5 * market_env.sigma * market_env.sigma) * option_specification.expiration) / normalizer;
+        double d2 = d1 - normalizer;
+        double option_price = option_specification.strike * normal_cdf(-d2) * exponential - market_env.underlying_price * normal_cdf(-d1);
+
+        // Then we use put-call parity to calculate the call price (if the option is a call)
+        if (option_specification.type == call) {
+            option_price += market_env.underlying_price - option_specification.strike * std::exp(-market_env.risk_free_rate * option_specification.expiration);
+        }
+        return option_price;
+    }
+    //
+    // time_steps is the number of temporal points, not the intervals between them: |----|----| <- this is time_step=3
+    void calculate_price_surface(OptionSpec &option_specification, MarketEnvironment &market_env, int time_steps, int spatial_resolution, std::span<double> price_surface_buffer, std::span<double> s_grid_buffer, std::span<double> t_grid_buffer) {
+        generate_s_grid_exponential(option_specification, market_env, s_grid_buffer);
+        // Populate the first row of the price_surface_buffer with the payoff
+        generate_payoff(option_specification, s_grid_buffer, price_surface_buffer);
+
+        // First calculate the price surface for a put option
+        std::vector<double> log_s_over_K_vector(spatial_resolution, 0.0);
+        for (int j=0; j<spatial_resolution; j++)
+            log_s_over_K_vector[j] = std::log(s_grid_buffer[j] / option_specification.strike);
+
+        t_grid_buffer[0] = 0.0;
+        double dt = option_specification.expiration / double(time_steps - 1);
+        for (int i=1; i<time_steps; i++) {
+            double t = i * dt;
+            t_grid_buffer[i] = t;
+            double exponential = std::exp(-market_env.risk_free_rate * t);
+            double normalizer = market_env.sigma * std::sqrt(t);
+
+            for (int j=0; j<spatial_resolution; j++) {
+                double d1 = (log_s_over_K_vector[j] + (market_env.risk_free_rate + 0.5 * market_env.sigma * market_env.sigma) * t) / normalizer;
+                double d2 = d1 - normalizer;
+                price_surface_buffer[i * spatial_resolution + j] = option_specification.strike * normal_cdf(-d2) * exponential - s_grid_buffer[j] * normal_cdf(-d1);
+            }
+        }
+    
+        // If a call option is specified, use the put-call parity to calculate the call option surface
+        if (option_specification.type == call) {
+            for (int i=0; i<time_steps; i++) {
+                double time_component = option_specification.strike * std::exp(-market_env.risk_free_rate * t_grid_buffer[i]);
+                for (int j=0; j<spatial_resolution; j++) {
+                    price_surface_buffer[i * spatial_resolution + j] += s_grid_buffer[j] - time_component;
+                }
+            }
+        }
+    }
 };
 
-// Standard Normal PDF
-double normal_pdf(double z) {
-    static const double inv_sqrt_2pi = 0.3989422804014326779;
-    return inv_sqrt_2pi * std::exp(-0.5 * z * z);
-}
-// Standard Normal CDF
-double normal_cdf(double z) {
-    return 0.5 * std::erfc(-z * std::sqrt(0.5));
-}
-
-double price_european_put_option(double strike_price, double expiration, double current_price, double risk_free_rate, double sigma) {
-    double exponential = std::exp(-risk_free_rate * expiration);
-    double normalizer = sigma * std::sqrt(expiration);
-    double log_S_over_K = std::log(current_price / strike_price);
-    double d1 = (log_S_over_K + (risk_free_rate - 0.5 * sigma * sigma) * expiration) / normalizer;
-    double d2 = d1 + normalizer;
-    return strike_price * normal_cdf(-d1) * exponential - current_price * normal_cdf(-d2);
-}
-
-double price_european_call_option(double strike_price, double expiration, double current_price, double risk_free_rate, double sigma) {
-    double put_price = price_european_put_option(strike_price, expiration, current_price, risk_free_rate, sigma);
-    return put_price + current_price - strike_price * std::exp(-risk_free_rate * expiration);
-}
 
 class ThomasSolver {
 private:
@@ -411,25 +480,30 @@ void export_surface_to_json(std::span<const double> s_grid,
 
 #ifndef __EMSCRIPTEN__
 int main() {
-    float S = 100, K = 100, r = 0.05, sigma = 0.55, T = 1.0;
-    std::cout << "Call Option Price: " << price_european_call_option(K, T, S, r, sigma) << std::endl;
-    std::cout << "Put Option Price:  " << price_european_put_option(K, T, S, r, sigma) << std::endl;
-
-    OptionSpec option = {100.0, 1, put};
+    OptionSpec call_option = {100.0, 1.0, call};
+    OptionSpec put_option = {100.0, 1.0, put};
     MarketEnvironment market = {100.0, 0.2, 0.05};
 
-    int spatial_resolution =  500;
-    int temporal_resolution = 10000;
+
+
+
+    int spatial_resolution =  201;
+    int temporal_resolution = 1000;
 
     
     std::vector<double> price_surface_buffer(spatial_resolution * temporal_resolution, 0.0);
     std::vector<double> s_grid_buffer(spatial_resolution, 0.0);
     std::vector<double> t_grid_buffer(temporal_resolution, 0.0);
 
-    AmericanOptionPricer pricer(spatial_resolution);
+    AmericanOptionPricer american_pricer(spatial_resolution);
+    EuropeanOptionPricer european_pricer;
 
-    pricer.calculate_price_surface(option, market, temporal_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
-    std::cout << "Option Price: " << pricer.price(option, market, temporal_resolution) << std::endl;
+    // std::cout << "Call Option Price: " << european_pricer.price(call_option, market) << std::endl;
+    // std::cout << "Put Option Price:  " << european_pricer.price(put_option, market) << std::endl;
+
+    // american_pricer.calculate_price_surface(call_option, market, temporal_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
+    european_pricer.calculate_price_surface(put_option, market, temporal_resolution, spatial_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
+    // std::cout << "Option Price: " << american_pricer.price(call_option, market, temporal_resolution) << std::endl;
 
     export_surface_to_json(s_grid_buffer, t_grid_buffer, price_surface_buffer, "test/price_surface.json");
 
