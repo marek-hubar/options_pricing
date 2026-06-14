@@ -154,3 +154,58 @@ body {
   border-radius: 8px;
   overflow: hidden;
 }
+
+@media (max-width: 768px) {
+  body {
+    overflow: auto;
+  }
+
+  #container {
+    flex-direction: column;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  #controls {
+    width: 100%;
+    min-width: 0;
+    padding: 16px 14px;
+    border-right: none;
+    border-bottom: 2px solid #2a2a4a;
+    max-height: 45vh;
+  }
+
+  #controls h2 {
+    font-size: 12px;
+    margin: 14px 0 6px 0;
+  }
+
+  #controls label {
+    font-size: 12px;
+  }
+
+  #controls input[type="number"],
+  #controls select {
+    padding: 10px 10px;
+    font-size: 16px;
+  }
+
+  #controls button {
+    padding: 14px;
+    font-size: 16px;
+  }
+
+  #results {
+    flex: auto;
+    padding: 14px;
+    min-height: 55vh;
+  }
+
+  #price-display {
+    font-size: 20px;
+  }
+
+  #surface-plot {
+    min-height: 300px;
+  }
+}
