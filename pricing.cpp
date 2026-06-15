@@ -16,7 +16,7 @@ struct OptionSpec {
 
 struct MarketEnvironment {
     double underlying_price;
-    double dividend_yield; // as fraction of the stock price
+    double dividend_yield; // As fraction of the stock price
     double sigma;
     double risk_free_rate;
 };
@@ -118,12 +118,18 @@ public:
     }
 };
 
+struct TridiagonalMatrix {
+    std::span<const double> a; // Lower Diagonal (1 to N-1)
+    std::span<const double> b; // Diagonal       (0 to N-1)
+    std::span<const double> c; // Upper Diagonal (0 to N-2)
+};
 
 class ThomasSolver {
 private:
     std::vector<double> c_prime; // Cached upper-diagonal multipliers
     std::vector<double> d_prime; // Reusable workspace for the RHS
     std::vector<double> denom;   // Cached denominators (b_i - a_i * c'_{i-1})
+    size_t N;
 
 public:
     // Constructor: Pre-computes everything that doesn't change over time
@@ -131,7 +137,7 @@ public:
                  std::span<const double> b, 
                  std::span<const double> c) 
     {
-        const size_t N = b.size();
+        N = b.size();
         c_prime.resize(N, 0.0);
         d_prime.resize(N, 0.0);
         denom.resize(N, 0.0);
@@ -180,10 +186,23 @@ private:
         std::optional<ThomasSolver> solver;
         std::vector<double> a, b, c, d;
         int N;
-        CrankNicolsonStepper(std::span<double> x_grid, double d_tau) {
+        
+        // Asymptotic boundary weights
+        double c_L1, c_L2, c_R1, c_R2;
+
+        CrankNicolsonStepper(std::span<const double> x_grid, double d_tau, double alpha) {
             N = static_cast<int>(x_grid.size());
-            double c_L = (x_grid[1] - x_grid[0]) / (x_grid[2] - x_grid[1]);
-            double c_R = (x_grid[N-1] - x_grid[N-2]) / (x_grid[N-2] - x_grid[N-3]);
+            
+            double dx = x_grid[1] - x_grid[0]; 
+            double E = std::exp(dx);
+
+            // Left Boundary Multipliers (V_SS = 0 as S -> 0)
+            c_L1 = (1.0 + 1.0 / E) * std::exp(alpha * dx);
+            c_L2 = std::exp((2.0 * alpha - 1.0) * dx);
+
+            // Right Boundary Multipliers (V_SS = 0 as S -> infinity)
+            c_R1 = (1.0 + E) * std::exp(-alpha * dx);
+            c_R2 = std::exp((1.0 - 2.0 * alpha) * dx);
 
             a.resize(N-2, 0.0);
             b.resize(N-2, 0.0);
@@ -198,24 +217,35 @@ private:
                 b[i-1] = 1.0 + d_tau / (h_L * h_R);
                 c[i-1] = -d_tau / (h_R * h_L_plus_h_R);
             }
-            b[0] += a[0] * (1 + c_L);
-            c[0] -= a[0] * c_L;
+
+            b[0] += a[0] * c_L1;
+            c[0] -= a[0] * c_L2;
             a[0] = 0.0;
-            a[N-3] -= c[N-3] * c_R;
-            b[N-3] += c[N-3] * (1 + c_R);
+
+            a[N-3] -= c[N-3] * c_R2;
+            b[N-3] += c[N-3] * c_R1;
             c[N-3] = 0.0;
 
             solver.emplace(a, b, c);
         }
 
-        void advance_one_step(std::span<double> price_curr, std::span<double> price_next) {
+        void advance_one_step(std::span<const double> price_curr, std::span<double> price_next, int current_step_count, double d_tau, double alpha, double beta, std::span<const double> base_intrinsic) {
             for (int i=0; i<N-2; i++) {
-                d[i] = -a[i] * price_curr[i] +  (2 - b[i]) * price_curr[i+1] - c[i] * price_curr[i+2];
+                d[i] = -a[i] * price_curr[i] + (2.0 - b[i]) * price_curr[i+1] - c[i] * price_curr[i+2];
             }
 
-            solver->solve(a, d, price_next);
-        }
+            solver->solve(a, d, price_next.subspan(1, N-2));
 
+            price_next[0] = c_L1 * price_next[1] - c_L2 * price_next[2];
+            price_next[N-1] = c_R1 * price_next[N-2] - c_R2 * price_next[N-3];
+
+            double current_tau = (current_step_count + 1) * d_tau;
+            double time_scalar = std::exp(-beta * current_tau);
+
+            for (int j=0; j<N; j++) {
+                price_next[j] = std::max(price_next[j], time_scalar * base_intrinsic[j]);
+            }
+        }
     };
 
     static void generate_x_grid_uniform(const OptionSpec &option, const MarketEnvironment &market, std::span<double> x_grid) {
@@ -273,24 +303,13 @@ public:
         auto first_row = price_surface_buffer.subspan(0, spatial_resolution);
         std::copy(base_intrinsic.begin(), base_intrinsic.end(), first_row.begin());
 
-        CrankNicolsonStepper stepper(x_grid, d_tau);
+        CrankNicolsonStepper stepper(x_grid, d_tau, alpha);
 
         for (int i=0; i<time_steps-1; i++) {
             auto row_tau_i = price_surface_buffer.subspan(spatial_resolution * i, spatial_resolution);
             auto row_tau_i_plus_one = price_surface_buffer.subspan(spatial_resolution * (i+1), spatial_resolution);
-            auto row_tau_i_plus_one_interior = price_surface_buffer.subspan(spatial_resolution * (i+1) + 1, spatial_resolution-2);
 
-            stepper.advance_one_step(row_tau_i, row_tau_i_plus_one_interior);
-
-            row_tau_i_plus_one[0] = (1 + c_L) * row_tau_i_plus_one[1] - c_L * row_tau_i_plus_one[2];
-            row_tau_i_plus_one[spatial_resolution-1] = (1 + c_R) * row_tau_i_plus_one[spatial_resolution-2] - c_R * row_tau_i_plus_one[spatial_resolution-3];
-
-            double current_tau = (i + 1) * d_tau;
-            double time_scalar = std::exp(-beta * current_tau);
-
-            for (int j=0; j<spatial_resolution; j++) {
-                row_tau_i_plus_one[j] = std::max(row_tau_i_plus_one[j], time_scalar * base_intrinsic[j]);
-            }
+            stepper.advance_one_step(row_tau_i, row_tau_i_plus_one, i, d_tau, alpha, beta, base_intrinsic);
         }
 
         for (int j = 0; j < spatial_resolution; j++) {
@@ -358,24 +377,12 @@ public:
         std::vector<double> u_prev(spatial_resolution, 0.0);
         std::vector<double> u_curr = base_intrinsic;
 
-        CrankNicolsonStepper stepper(x_grid, d_tau);
+        CrankNicolsonStepper stepper(x_grid, d_tau, alpha);
 
         for (int i = 0; i < time_intervals; i++) {
             std::swap(u_prev, u_curr);
-
             auto u_curr_inside = std::span<double>(u_curr).subspan(1, spatial_resolution - 2);
-
-            stepper.advance_one_step(u_prev, u_curr_inside);
-
-            u_curr[0] = (1.0 + c_L) * u_curr[1] - c_L * u_curr[2];
-            u_curr[spatial_resolution-1] = (1.0 + c_R) * u_curr[spatial_resolution-2] - c_R * u_curr[spatial_resolution-3];
-
-            double current_tau = (i + 1) * d_tau;
-            double time_scalar = std::exp(-beta * current_tau);
-
-            for (int j = 0; j < spatial_resolution; j++) {
-                u_curr[j] = std::max(u_curr[j], time_scalar * base_intrinsic[j]);
-            }
+            stepper.advance_one_step(u_prev, u_curr, i, d_tau, alpha, beta, base_intrinsic);
         }
 
         double target_x = std::log(market_env.underlying_price / option_specification.strike);
@@ -461,30 +468,33 @@ void export_surface_to_json(std::span<const double> s_grid,
 int main() {
     OptionSpec call_option = {100.0, 1.0, call};
     OptionSpec put_option = {100.0, 1.0, put};
-    MarketEnvironment market = {100.0, 0.1, 0.2, 0.05};
+    MarketEnvironment market = {100.0, 0.0, 0.2, 0.05};
 
-
-
-
-    int spatial_resolution =  201;
-    int temporal_resolution = 1000;
+    int spatial_resolution =  437;
+    int temporal_resolution = 4750;
 
     
     std::vector<double> price_surface_buffer(spatial_resolution * temporal_resolution, 0.0);
+    std::vector<double> price_surface_buffer1(spatial_resolution * temporal_resolution, 0.0);
+    std::vector<double> price_surface_buffer2(spatial_resolution * temporal_resolution, 0.0);
     std::vector<double> s_grid_buffer(spatial_resolution, 0.0);
     std::vector<double> t_grid_buffer(temporal_resolution, 0.0);
 
     AmericanOptionPricer american_pricer;
     EuropeanOptionPricer european_pricer;
 
-    // std::cout << "Call Option Price: " << european_pricer.price(call_option, market) << std::endl;
-    // std::cout << "Put Option Price:  " << european_pricer.price(put_option, market) << std::endl;
+    std::cout << "American Call Option Price: " << american_pricer.price(call_option, market, temporal_resolution, spatial_resolution) << std::endl;
+    std::cout << "American Put Option Price:  " << american_pricer.price(put_option, market, temporal_resolution, spatial_resolution) << std::endl;
+    std::cout << "European Call Option Price: " << european_pricer.price(call_option, market) << std::endl;
+    std::cout << "European Put Option Price:  " << european_pricer.price(put_option, market) << std::endl;
 
-    // american_pricer.calculate_price_surface(call_option, market, temporal_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
-    european_pricer.calculate_price_surface(put_option, market, temporal_resolution, spatial_resolution, price_surface_buffer, s_grid_buffer, t_grid_buffer);
-    // std::cout << "Option Price: " << american_pricer.price(call_option, market, temporal_resolution, spatial_resolution) << std::endl;
+    european_pricer.calculate_price_surface(call_option, market, temporal_resolution, spatial_resolution, price_surface_buffer1, s_grid_buffer, t_grid_buffer);
+    american_pricer.calculate_price_surface(call_option, market, temporal_resolution, price_surface_buffer2, s_grid_buffer, t_grid_buffer);
 
-    export_surface_to_json(s_grid_buffer, t_grid_buffer, price_surface_buffer, "test/price_surface.json");
+    for (int i=0; i<spatial_resolution * temporal_resolution; i++)
+        price_surface_buffer[i] = price_surface_buffer2[i] - price_surface_buffer1[i];
+
+    export_surface_to_json(s_grid_buffer, t_grid_buffer, price_surface_buffer2, "test/price_surface.json");
 
     return 0;
 }
